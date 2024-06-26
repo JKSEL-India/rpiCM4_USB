@@ -14,6 +14,11 @@
 #include <part.h>
 #include <stdlib.h>
 #include <linux/printk.h>
+#include <display_options.h>
+#include <mapmem.h>
+
+static ulong g_addr, g_length;
+const void *g_buf;
 
 /**
  * image_size - final fastboot image size
@@ -42,6 +47,7 @@ static void oem_format(char *, char *);
 static void oem_partconf(char *, char *);
 static void oem_bootbus(char *, char *);
 static void oem_console(char *, char *);
+static void oem_ramdump(char *, char *);
 static void run_ucmd(char *, char *);
 static void run_acmd(char *, char *);
 
@@ -113,6 +119,10 @@ static const struct {
 		.command = "oem console",
 		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_CMD_OEM_CONSOLE, (oem_console), (NULL))
 	},
+	[FASTBOOT_COMMAND_OEM_RAMDUMP] = {
+		.command = "oem ramdump",
+		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_OEM_RAMDUMP, (oem_ramdump), (NULL))
+	},
 	[FASTBOOT_COMMAND_UCMD] = {
 		.command = "UCmd",
 		.dispatch = CONFIG_IS_ENABLED(FASTBOOT_UUU_SUPPORT, (run_ucmd), (NULL))
@@ -158,6 +168,70 @@ int fastboot_handle_command(char *cmd_string, char *response)
 	return -1;
 }
 
+#define MAX_LINE_LENGTH_BYTES		64
+#define DEFAULT_LINE_LENGTH_BYTES	16
+
+static int ramdump_line(ulong addr, const void *data, uint count,
+		 char *out)
+{
+	/* linebuf as a union causes proper alignment */
+	union linebuf {
+		uint64_t uq[MAX_LINE_LENGTH_BYTES/sizeof(uint64_t) + 1];
+		uint32_t ui[MAX_LINE_LENGTH_BYTES/sizeof(uint32_t) + 1];
+		uint16_t us[MAX_LINE_LENGTH_BYTES/sizeof(uint16_t) + 1];
+		uint8_t  uc[MAX_LINE_LENGTH_BYTES/sizeof(uint8_t) + 1];
+	} lb;
+	uint thislinelen;
+	int i;
+	ulong x;
+
+	thislinelen = DEFAULT_LINE_LENGTH_BYTES / CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH;
+	out += sprintf(out, "%08lx:", addr);
+
+	/* check for overflow condition */
+	if (count < thislinelen)
+		thislinelen = count;
+
+	/* Copy from memory into linebuf and print hex values */
+	for (i = 0; i < thislinelen; i++) {
+		if (CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH == 4)
+			x = lb.ui[i] = *(volatile uint32_t *)data;
+		else if (MEM_SUPPORT_64BIT_DATA && CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH == 8)
+			x = lb.uq[i] = *(volatile ulong *)data;
+		else if (CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH == 2)
+			x = lb.us[i] = *(volatile uint16_t *)data;
+		else
+			x = lb.uc[i] = *(volatile uint8_t *)data;
+		if (CONFIG_IS_ENABLED(USE_TINY_PRINTF))
+			out += sprintf(out, " %x", (uint)x);
+		else
+			out += sprintf(out, " %0*lx", CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH * 2, x);
+		data += CONFIG_FASTBOOT_OEM_RAMDUMP_WIDTH;
+	}
+
+	return thislinelen;
+}
+
+static int copy_buffer(char *buf)
+{
+	int thislinelen = ramdump_line(g_addr, g_buf, g_length, buf);
+	if (thislinelen < 0)
+		return -1;
+
+	/* update references */
+	g_buf += thislinelen;
+	g_addr += thislinelen;
+	g_length -= thislinelen;
+
+	return thislinelen;
+}
+
+static int alloc_mem(void)
+{
+	g_buf = map_sysmem(g_addr, g_length);
+	return 0;
+}
+
 void fastboot_multiresponse(int cmd, char *response)
 {
 	switch (cmd) {
@@ -179,6 +253,23 @@ void fastboot_multiresponse(int cmd, char *response)
 				else
 					fastboot_response("INFO", response, "%s", buf);
 			}
+			break;
+		}
+	case FASTBOOT_COMMAND_OEM_RAMDUMP:
+		if (CONFIG_IS_ENABLED(FASTBOOT_OEM_RAMDUMP)) {
+			char buf[FASTBOOT_RESPONSE_LEN] = { 0 };
+			int ret = copy_buffer(buf);
+			if (ret == -1) {
+				fastboot_fail("Error dumping memory", response);
+				unmap_sysmem(g_buf);
+			}
+			else if (ret == 0) {
+				fastboot_okay(NULL, response);
+				printf("skb %s %d\n", __FUNCTION__, __LINE__);
+				unmap_sysmem(g_buf);
+			}
+			else
+				fastboot_response("INFO", response, "%s", buf);
 			break;
 		}
 	default:
@@ -542,3 +633,18 @@ static void __maybe_unused oem_console(char *cmd_parameter, char *response)
 	else
 		fastboot_response(FASTBOOT_MULTIRESPONSE_START, response, NULL);
 }
+
+static void __maybe_unused oem_ramdump(char *cmd_parameter, char *response)
+{
+	char *arg = cmd_parameter;
+	strsep(&arg, " ");
+
+	g_addr = hextoul(cmd_parameter, NULL);
+	g_length = hextoul(arg, NULL);
+
+	if (alloc_mem())
+		fastboot_fail("Memory Error", response);
+	else
+		fastboot_response(FASTBOOT_MULTIRESPONSE_START, response, NULL);
+}
+

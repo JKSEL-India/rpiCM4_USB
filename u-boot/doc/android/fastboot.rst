@@ -30,6 +30,7 @@ The following OEM commands are supported (if enabled):
 - ``oem bootbus``  - this executes ``mmc bootbus %x %s`` to configure eMMC
 - ``oem run`` - this executes an arbitrary U-Boot command
 - ``oem console`` - this dumps U-Boot console record buffer
+- ``oem ramdump`` - this transfers the RAM contents to Host
 
 Support for both eMMC and NAND devices is included.
 

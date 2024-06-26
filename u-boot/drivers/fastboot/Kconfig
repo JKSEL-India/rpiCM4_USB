@@ -249,6 +249,19 @@ config FASTBOOT_CMD_OEM_CONSOLE
 	  Add support for the "oem console" command to input and read console
 	  record buffer.
 
+config FASTBOOT_OEM_RAMDUMP
+	bool "Enable the 'oem ramdump' command"
+	help
+	  This extends the fastboot protocol with an "oem ramdump" command. This
+	  command allows transferring RAM memory to host over fastboot.
+
+config FASTBOOT_OEM_RAMDUMP_WIDTH
+	int "data value width. May be 1, 2, 4 or 8."
+	depends on FASTBOOT_OEM_RAMDUMP
+	default 1
+	help
+	  This represents a number of bytes before a space appears on dump.
+
 endif # FASTBOOT
 
 endmenu
